@@ -6,40 +6,109 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-string createJsonResponse(string eventName, string socketId, string? name, long? timestamp, string? text){
-  var messageResponse = new Message{
-          eventName = eventName,
-          socketId = socketId,
-          name = name,
-          timestamp = timestamp,
-          text = text
-      };
+String ip = "192.168.0.10";
+Int32 port = 13000;
+TcpClient client;
 
-  return JsonSerializer.Serialize(messageResponse);
-}
+Dictionary<string,User> users = new Dictionary<string,User>();
 
-Message? readJson(string jsonString){
+Message? messageReadJson(string jsonString){
   return JsonSerializer.Deserialize<Message>(jsonString);
 }
 
-TcpListener listener = null;
-try {
-  String ip = "IP_ADDRESS";
-  Int32 port = 13000;
-  IPAddress address = IPAddress.Parse(ip);
-  listener = new TcpListener(address, port);
+void userConnected(string socketId, string name){
+  users.Add(socketId, new User(name));
+  string userJoinJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "userJoin",
+    socketId = socketId,
+    name = name
+  }}});
+  emit(userJoinJson);
+  Dictionary<string,string> usersList = new Dictionary<string,string>();
+  foreach(KeyValuePair<string, User> userData in users){
+    usersList.Add(userData.Key, userData.Value.name);
+  }
+  string usersUpdateJson = JsonSerializer.Serialize(new Message{
+    eventName = "usersUpdate",
+    socketId = socketId,
+    users = usersList
+  });
+  emit(usersUpdateJson);
+}
 
+void userDisconnected(string socketId){
+  string userDisconnectedJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "userDisconnectedJson",
+    socketId = socketId,
+    name = users[socketId].name
+  }}});
+  emit(userDisconnectedJson);
+  users.Remove(socketId);
+  Dictionary<string,string> usersList = new Dictionary<string,string>();
+  foreach(KeyValuePair<string, User> userData in users){
+    usersList.Add(userData.Key, userData.Value.name);
+  }
+  string usersUpdateJson = JsonSerializer.Serialize(new Message{
+    eventName = "usersUpdate",
+    socketId = socketId,
+    users = usersList
+  });
+  emit(usersUpdateJson);
+}
+
+void userSendMessage(string socketId, string text){
+  string userSendMessageJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "userMessage",
+    socketId = socketId,
+    name = users[socketId].name,
+    text = text
+  }}});
+  emit(userSendMessageJson);
+  string userStopTypingJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "userStopTyping",
+    socketId = socketId,
+  }}});
+  emit(userStopTypingJson);
+}
+
+void userTyping(string socketId){
+  string userTypingJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "userTyping",
+    socketId = socketId,
+    name = users[socketId].name
+  }}});
+  emit(userTypingJson);
+}
+
+void stopTyping(string socketId){
+  string stopTypingJson = JsonSerializer.Serialize(new Dictionary<string,Message>(){{"broadcast", new Message{
+    eventName = "stopTyping",
+    socketId = socketId
+  }}});
+  emit(stopTypingJson);
+}
+
+void emit(string message){
+  NetworkStream stream = client.GetStream();
+  byte[] msg = System.Text.Encoding.ASCII.GetBytes(message + "endMessageDCL");
+  stream.Write(msg, 0, msg.Length);
+  Console.WriteLine("Sent emit: {0}", message);
+}
+
+IPAddress address = IPAddress.Parse(ip);
+TcpListener listener = new TcpListener(address, port);;
+try {
   listener.Start();
   Console.WriteLine($"Server started. Listening to TCP clients at {ip}:{port}");
   // Buffer para ler dados
   Byte[] bytes = new Byte[256];
-  String data = null;
+  String data;
 
   // Entrar no loop de listening
   while (true) {
     Console.Write("Aguardando conexão... ");
 
-    TcpClient client = listener.AcceptTcpClient();
+    client = listener.AcceptTcpClient();
     Console.WriteLine("Conectado!");
 
     // Recebe objeto stream para leitura e escrita
@@ -53,17 +122,35 @@ try {
       data = System.Text.Encoding.ASCII.GetString(bytes, 0, i);
       Console.WriteLine("Received: {0}", data);
 
-      Message? messageData = readJson(data);
+      try{
+        Message? messageData = messageReadJson(data);
 
-      Console.WriteLine($"Event: {messageData?.eventName}");
+        if(messageData != null){
+          Console.WriteLine($"Event: {messageData.eventName}");
+          switch(messageData!.eventName){
+            case "connect":
+              userConnected(messageData.socketId!, messageData.name!);
+              break;
+            case "disconnect":
+              userDisconnected(messageData.socketId!);
+              break;
+            case "msg":
+              userSendMessage(messageData.socketId!, messageData.text!);
+              break;
+            case "typing":
+              userTyping(messageData.socketId!);
+              break;
+            case "stopTyping":
+              stopTyping(messageData.socketId!);
+              break;
+            default:
+              Console.WriteLine($"Evento não reconhecido: {messageData.eventName}");
+              break;
+          }
+        }
+      }
+      catch(Exception e){
 
-      if(messageData != null){
-        string jsonString = createJsonResponse(messageData.eventName, messageData.socketId, messageData.name, messageData.timestamp, messageData.text);
-        byte[] msg = System.Text.Encoding.ASCII.GetBytes(jsonString);
-
-        // Enviar resposta
-        stream.Write(msg, 0, msg.Length);
-        Console.WriteLine("Sent: {0}", data);
       }
     }
 
